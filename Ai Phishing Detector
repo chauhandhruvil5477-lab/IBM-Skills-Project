@@ -1,0 +1,244 @@
+from flask import Flask, render_template_string, request
+import re
+from sklearn.ensemble import RandomForestClassifier
+
+app = Flask(__name__)
+
+# -----------------------------
+# SIMPLE AI MODEL
+# -----------------------------
+X = [
+    [10,0,0,0,1,0,0],
+    [80,2,1,3,0,1,4],
+    [50,0,1,1,1,0,0],
+    [95,3,2,4,0,1,5],
+    [20,0,0,0,1,0,0],
+    [85,2,2,3,0,1,3],
+]
+
+y = [0,1,0,1,0,1]
+
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+model.fit(X, y)
+
+history = []
+
+# -----------------------------
+# FEATURE EXTRACTION
+# -----------------------------
+def extract_features(url):
+    url_length = len(url)
+    at_count = url.count('@')
+    dash_count = url.count('-')
+    slash_count = url.count('/')
+
+    https_flag = 1 if url.lower().startswith("https://") else 0
+
+    ip = re.findall(r'(?:\d{1,3}\.){3}\d{1,3}', url)
+    ip_flag = 1 if ip else 0
+
+    suspicious_words = [
+        "login","verify","secure",
+        "account","bank","update",
+        "paypal","signin"
+    ]
+
+    keyword_score = 0
+    for word in suspicious_words:
+        if word in url.lower():
+            keyword_score += 1
+
+    return [
+        url_length,
+        at_count,
+        dash_count,
+        slash_count,
+        https_flag,
+        ip_flag,
+        keyword_score
+    ]
+
+# -----------------------------
+# RISK CALCULATION
+# -----------------------------
+def calculate_risk(features, prob):
+    rule_risk = 0
+
+    if features[0] > 75: rule_risk += 20
+    if features[1] > 0: rule_risk += 15
+    if features[2] > 1: rule_risk += 10
+    if features[4] == 0: rule_risk += 25
+    if features[5] == 1: rule_risk += 30
+    if features[6] > 2: rule_risk += 20
+
+    risk = (rule_risk + prob * 100) / 2
+    return round(min(risk, 100), 2)
+
+# -----------------------------
+# HTML TEMPLATE
+# -----------------------------
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<title>AI Phishing Detector</title>
+
+<style>
+body{background:#08111f;color:white;font-family:Arial;margin:0}
+.container{width:80%;margin:auto;padding:30px}
+h1{text-align:center;color:#4ade80}
+form{text-align:center;margin:20px}
+input{width:60%;padding:12px;border-radius:10px}
+button{padding:12px 20px;background:#22c55e;color:white;border-radius:10px;border:none}
+.card{background:#111827;padding:20px;margin-top:20px;border-radius:15px}
+.safe{color:#22c55e}
+.phishing{color:#ef4444}
+.box{background:#1f2937;padding:15px;border-radius:10px;width:30%;text-align:center}
+.stats{display:flex;justify-content:space-between}
+table{width:100%;border-collapse:collapse;margin-top:20px}
+td,th{border:1px solid #374151;padding:10px;text-align:center}
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🔐 AI Phishing Detector</h1>
+
+<form method="POST" action="/check">
+<input name="url" placeholder="Enter URL" required>
+<button type="submit">Check</button>
+</form>
+
+<div class="stats">
+<div class="box">
+<h2>{{ total }}</h2><p>Total</p>
+</div>
+<div class="box">
+<h2>{{ safe_count }}</h2><p>Safe</p>
+</div>
+<div class="box">
+<h2>{{ phishing_count }}</h2><p>Phishing</p>
+</div>
+</div>
+
+{% if result %}
+<div class="card">
+<h2 class="{{ color }}">{{ result }}</h2>
+
+<p><b>URL:</b> {{ url }}</p>
+<p><b>Confidence:</b> {{ prob }}%</p>
+<p><b>Risk Score:</b> {{ risk }}%</p>
+
+<ul>
+<li>Length: {{ length }}</li>
+<li>@ Count: {{ at }}</li>
+<li>Dash: {{ dash }}</li>
+<li>HTTPS: {{ https }}</li>
+<li>IP: {{ ip }}</li>
+<li>Keywords: {{ keyword }}</li>
+</ul>
+
+</div>
+{% endif %}
+
+{% if history %}
+<div class="card">
+<h2>History</h2>
+<table>
+<tr><th>URL</th><th>Result</th><th>Risk</th></tr>
+{% for item in history %}
+<tr>
+<td>{{ item.url }}</td>
+<td>{{ item.result }}</td>
+<td>{{ item.risk }}%</td>
+</tr>
+{% endfor %}
+</table>
+</div>
+{% endif %}
+
+</div>
+</body>
+</html>
+"""
+
+# -----------------------------
+# ROUTES
+# -----------------------------
+@app.route('/')
+def home():
+    total = len(history)
+    safe_count = len([x for x in history if x["result"] == "SAFE"])
+    phishing_count = len([x for x in history if x["result"] == "PHISHING"])
+
+    return render_template_string(
+        HTML,
+        total=total,
+        safe_count=safe_count,
+        phishing_count=phishing_count,
+        history=history
+    )
+
+@app.route('/check', methods=['POST'])
+def check():
+    url = request.form['url']
+    features = extract_features(url)
+
+    prob = model.predict_proba([features])[0][1]
+
+    # 🔥 IMPORTANT: lower threshold for phishing detection
+    if prob > 0.4:
+        pred = 1
+    else:
+        pred = 0
+
+    # extra safety: rule-based override
+    if features[5] == 1 or features[4] == 0 or features[6] > 2:
+        pred = 1
+
+    risk = calculate_risk(features, prob)
+
+    if pred == 0:
+        result = "SAFE"
+        color = "safe"
+    else:
+        result = "PHISHING"
+        color = "phishing"
+
+    history.append({
+        "url": url,
+        "result": result,
+        "risk": risk
+    })
+
+    total = len(history)
+    safe_count = len([x for x in history if x["result"] == "SAFE"])
+    phishing_count = len([x for x in history if x["result"] == "PHISHING"])
+
+    return render_template_string(
+        HTML,
+        result=result,
+        color=color,
+        url=url,
+        prob=round(prob*100,2),
+        risk=risk,
+        length=features[0],
+        at=features[1],
+        dash=features[2],
+        https="Yes" if features[4] else "No",
+        ip="Yes" if features[5] else "No",
+        keyword=features[6],
+        history=history,
+        total=total,
+        safe_count=safe_count,
+        phishing_count=phishing_count
+    )
+
+# -----------------------------
+# RUN APP
+# -----------------------------
+if __name__ == "__main__":
+    app.run(debug=True)
